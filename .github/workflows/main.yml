@@ -21,7 +21,6 @@ jobs:
       - name: 3. Pobierz wszystkie pakiety (w tym z GitHuba) i zbuduj projekt
         run: |
           npm install
-          npm run build
           npm prune --omit=dev
 
       - name: 4. Przygotuj czysty folder do wysyłki (Wyłącz npm install na Wispbyte)
