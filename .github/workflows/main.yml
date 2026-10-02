@@ -3,7 +3,7 @@ name: Direct SFTP Upload (Full Repo + node_modules)
 on:
   push:
     branches: [ "main", "master" ]
-  workflow_dispatch: # Pozwala uruchomić ręcznie w zakładce Actions
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -23,9 +23,6 @@ jobs:
 
       - name: 4. Zablokuj ponowne pobieranie pakietów przez Wispbyte
         run: |
-          # Usuwamy dependencies z package.json po pobraniu node_modules.
-          # Dzięki temu Wispbyte przy starcie nie wywoła błędu pobierania z GitHuba,
-          # a wszystkie pakiety (w tym ts-node i typescript) są już fizycznie w node_modules!
           node -e '
             const fs = require("fs");
             const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
@@ -35,10 +32,7 @@ jobs:
           '
           rm -f package-lock.json
 
-      - name: 5. Włącz Cloudflare WARP (Ominięcie blokady IP GitHuba na Wispbyte)
-        uses: Boostport/setup-cloudflare-warp@v1
-
-      - name: 6. Prześlij całe repozytorium z node_modules przez SFTP (bez pakowania)
+      - name: 5. Prześlij całe repozytorium z node_modules przez SFTP (bez pakowania)
         env:
           HOST: ${{ secrets.SFTP_HOST }}
           PORT: ${{ secrets.SFTP_PORT }}
