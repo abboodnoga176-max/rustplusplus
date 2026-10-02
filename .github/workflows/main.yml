@@ -1,15 +1,15 @@
-name: Build and Direct SFTP Upload
+name: Direct SFTP Upload (Full Repo + node_modules)
 
 on:
   push:
     branches: [ "main", "master" ]
-  workflow_dispatch: # Pozwala odpalić ręcznie w zakładce Actions
+  workflow_dispatch: # Pozwala uruchomić ręcznie w zakładce Actions
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. Pobierz kod z repozytorium
+      - name: 1. Pobierz całe repozytorium
         uses: actions/checkout@v4
 
       - name: 2. Konfiguracja Node.js
@@ -18,36 +18,27 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      - name: 3. Pobierz wszystkie pakiety (w tym z GitHuba) i zbuduj projekt
-        run: |
-          npm install
-          npm prune --omit=dev
+      - name: 3. Pobierz wszystkie pakiety (w tym te z GitHuba)
+        run: npm install
 
-      - name: 4. Przygotuj czysty folder do wysyłki (Wyłącz npm install na Wispbyte)
+      - name: 4. Zablokuj ponowne pobieranie pakietów przez Wispbyte
         run: |
-          mkdir -p dist_upload
-          cp -r build config node_modules dist_upload/
-          
-          # Tworzymy zmodyfikowany package.json BEZ dependencies.
-          # Dzięki temu Wispbyte przy starcie nie będzie próbował pobierać nic z GitHuba,
-          # a Node.js i tak wczyta wszystkie pakiety z przesłanego folderu node_modules!
+          # Usuwamy dependencies z package.json po pobraniu node_modules.
+          # Dzięki temu Wispbyte przy starcie nie wywoła błędu pobierania z GitHuba,
+          # a wszystkie pakiety (w tym ts-node i typescript) są już fizycznie w node_modules!
           node -e '
             const fs = require("fs");
             const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
             delete pkg.dependencies;
             delete pkg.devDependencies;
-            pkg.scripts = { start: "node build/index.js" };
-            fs.writeFileSync("dist_upload/package.json", JSON.stringify(pkg, null, 2));
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2));
           '
-          
-          # Tworzymy pusty plik index.js przekierowujący do build/index.js 
-          # (na wypadek gdyby Wispbyte miał na sztywno ustawione uruchamianie index.js)
-          echo "require('./build/index.js');" > dist_upload/index.js
+          rm -f package-lock.json
 
       - name: 5. Włącz Cloudflare WARP (Ominięcie blokady IP GitHuba na Wispbyte)
         uses: Boostport/setup-cloudflare-warp@v1
 
-      - name: 6. Prześlij pliki bezpośrednio przez SFTP (bez pakowania i bez SSH/SCP)
+      - name: 6. Prześlij całe repozytorium z node_modules przez SFTP (bez pakowania)
         env:
           HOST: ${{ secrets.SFTP_HOST }}
           PORT: ${{ secrets.SFTP_PORT }}
@@ -56,7 +47,6 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y lftp
           
-          # Tworzymy skrypt dla lftp (używa czystego protokołu SFTP i przesyła 10 plików naraz)
           cat << 'EOF' > sftp_commands.txt
           set sftp:auto-confirm yes
           set net:timeout 20
@@ -64,10 +54,15 @@ jobs:
           set net:reconnect-interval-base 5
           set mirror:use-pget-n 1
           open -u "$USER","$PASS" sftp://$HOST:$PORT
-          mirror -R --parallel=10 --only-newer dist_upload/ /
+          mirror -R --parallel=10 --only-newer \
+            --exclude-glob .git/ \
+            --exclude-glob .github/ \
+            --exclude-glob docs/ \
+            --exclude-glob sftp_commands.txt \
+            --exclude-glob sftp_run.txt \
+            ./ /
           bye
           EOF
           
-          # Podmiana zmiennych i uruchomienie wysyłania
           envsubst < sftp_commands.txt > sftp_run.txt
           lftp -f sftp_run.txt
