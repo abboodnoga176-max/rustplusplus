@@ -1,0 +1,74 @@
+name: Build and Direct SFTP Upload
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch: # Pozwala odpalić ręcznie w zakładce Actions
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. Pobierz kod z repozytorium
+        uses: actions/checkout@v4
+
+      - name: 2. Konfiguracja Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 3. Pobierz wszystkie pakiety (w tym z GitHuba) i zbuduj projekt
+        run: |
+          npm install
+          npm run build
+          npm prune --omit=dev
+
+      - name: 4. Przygotuj czysty folder do wysyłki (Wyłącz npm install na Wispbyte)
+        run: |
+          mkdir -p dist_upload
+          cp -r build config node_modules dist_upload/
+          
+          # Tworzymy zmodyfikowany package.json BEZ dependencies.
+          # Dzięki temu Wispbyte przy starcie nie będzie próbował pobierać nic z GitHuba,
+          # a Node.js i tak wczyta wszystkie pakiety z przesłanego folderu node_modules!
+          node -e '
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            delete pkg.dependencies;
+            delete pkg.devDependencies;
+            pkg.scripts = { start: "node build/index.js" };
+            fs.writeFileSync("dist_upload/package.json", JSON.stringify(pkg, null, 2));
+          '
+          
+          # Tworzymy pusty plik index.js przekierowujący do build/index.js 
+          # (na wypadek gdyby Wispbyte miał na sztywno ustawione uruchamianie index.js)
+          echo "require('./build/index.js');" > dist_upload/index.js
+
+      - name: 5. Włącz Cloudflare WARP (Ominięcie blokady IP GitHuba na Wispbyte)
+        uses: Boostport/setup-cloudflare-warp@v1
+
+      - name: 6. Prześlij pliki bezpośrednio przez SFTP (bez pakowania i bez SSH/SCP)
+        env:
+          HOST: ${{ secrets.SFTP_HOST }}
+          PORT: ${{ secrets.SFTP_PORT }}
+          USER: ${{ secrets.SFTP_USER }}
+          PASS: ${{ secrets.SFTP_PASSWORD }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y lftp
+          
+          # Tworzymy skrypt dla lftp (używa czystego protokołu SFTP i przesyła 10 plików naraz)
+          cat << 'EOF' > sftp_commands.txt
+          set sftp:auto-confirm yes
+          set net:timeout 20
+          set net:max-retries 5
+          set net:reconnect-interval-base 5
+          set mirror:use-pget-n 1
+          open -u "$USER","$PASS" sftp://$HOST:$PORT
+          mirror -R --parallel=10 --only-newer dist_upload/ /
+          bye
+          EOF
+          
+          # Podmiana zmiennych i uruchomienie wysyłania
+          envsubst < sftp_commands.txt > sftp_run.txt
+          lftp -f sftp_run.txt
